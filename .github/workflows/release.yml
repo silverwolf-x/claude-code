@@ -16,6 +16,10 @@ on:
 permissions:
   contents: write
 
+# Release builds cover these targets only.
+env:
+  PLATFORMS: linux-x64,win32-x64
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -93,62 +97,28 @@ jobs:
           name: cometix-native
           path: native/dist/
 
-      - name: Build all packages
+      - name: Build packages
         run: |
           node scripts/fetch-and-process.mjs \
             --version "${{ matrix.version }}" \
+            --platforms "$PLATFORMS" \
             --output "./dist/${{ matrix.version }}"
 
-      - name: Verify main package
-        run: |
-          DIST="./dist/${{ matrix.version }}"
-          VERIFY=/tmp/verify-main
-
-          # Copy main package to temp dir for verification
-          cp -r "$DIST/main" "$VERIFY"
-
-          # Simulate postinstall with the linux-x64 platform package. Copy
-          # everything but its package.json, which would overwrite the main
-          # manifest — on split-ESM builds that also brings the chunk tree,
-          # without which cli.js cannot resolve a single import.
-          find "$DIST/packages/linux-x64" -maxdepth 1 -mindepth 1 \
-            ! -name package.json -exec cp -r {} "$VERIFY/" \;
-
-          cd "$VERIFY"
-          npm install --omit=optional --no-audit --no-fund
-
-          # Users launch from project directories, not the package directory.
-          # Running here catches assets accidentally resolved against cwd.
-          cd /tmp
-          node "$VERIFY/cli.js" --version
-          node "$VERIFY/cli.js" --help > "$VERIFY/help.txt"
-          head -5 "$VERIFY/help.txt"
-          node "$VERIFY/cli.js" mcp list
-
-          rm -rf "$VERIFY"
-
-      - name: Package tarballs
+      # One self-contained tarball per platform: main package and platform
+      # package merged, installable with `npm install -g <file>.tgz` without
+      # any @cometix package on the registry.
+      - name: Package release tarballs
         run: |
           DIST="./dist/${{ matrix.version }}"
           VERSION="${{ matrix.version }}"
           mkdir -p ./artifacts
-
-          # Main package
-          mkdir -p /tmp/pkg-wrap/package
-          cp -r "$DIST/main"/* /tmp/pkg-wrap/package/
-          tar czf "./artifacts/cometix-claude-code-${VERSION}.tgz" -C /tmp/pkg-wrap package/
-          rm -rf /tmp/pkg-wrap
-
-          # Platform packages
-          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 linux-arm64-musl linux-x64-musl win32-arm64 win32-x64 android-arm64; do
-            if [ -d "$DIST/packages/$platform" ]; then
-              mkdir -p /tmp/pkg-wrap/package
-              cp -r "$DIST/packages/$platform"/* /tmp/pkg-wrap/package/
-              tar czf "./artifacts/cometix-claude-code-${platform}-${VERSION}.tgz" -C /tmp/pkg-wrap package/
-              rm -rf /tmp/pkg-wrap
-            fi
+          for platform in ${PLATFORMS//,/ }; do
+            STAGE="/tmp/pkg-wrap-${platform}"
+            node scripts/build-standalone-package.mjs \
+              --dist "$DIST" --platform "$platform" --output "$STAGE/package"
+            tar czf "./artifacts/cometix-claude-code-${VERSION}-${platform}.tgz" -C "$STAGE" package/
+            rm -rf "$STAGE"
           done
-
           ls -lh ./artifacts/
 
       - name: Upload artifacts
@@ -157,8 +127,46 @@ jobs:
           name: packages-${{ matrix.version }}
           path: artifacts/
 
-  release:
+  # Install each tarball the way a user would, on its own OS, and run it from
+  # outside the package directory to catch assets resolved against cwd.
+  verify:
     needs: [check, build]
+    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.check.outputs.versions) }}
+        platform: [linux-x64, win32-x64]
+    runs-on: ${{ matrix.platform == 'win32-x64' && 'windows-latest' || 'ubuntu-latest' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: packages-${{ matrix.version }}
+          path: artifacts/
+
+      - name: Install
+        run: |
+          TGZ="artifacts/cometix-claude-code-${{ matrix.version }}-${{ matrix.platform }}.tgz"
+          npm install -g "$TGZ" --no-audit --no-fund
+
+      - name: Run
+        run: |
+          cd "$RUNNER_TEMP"
+          claude --version
+          claude --help > help.txt
+          head -5 help.txt
+          claude mcp list
+
+  release:
+    needs: [check, verify]
     if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
     runs-on: ubuntu-latest
     permissions:
@@ -195,7 +203,7 @@ jobs:
 
           if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
             if [ "${{ inputs.force }}" = "true" ]; then
-              gh release delete "v${VERSION}" --repo "$GITHUB_REPOSITORY" --yes
+              gh release delete "v${VERSION}" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
             else
               echo "Release v${VERSION} already exists, skipping"
               exit 0
@@ -203,97 +211,14 @@ jobs:
           fi
 
           BODY=$(gh api "repos/anthropics/claude-code/releases/tags/v${VERSION}" --jq '.body' 2>/dev/null || echo "")
+          NOTES=$(printf '%s\n\n%s\n\n%s' \
+            "Install (Node.js 24+): \`npm install -g ./cometix-claude-code-${VERSION}-<platform>.tgz\`" \
+            "Platforms: ${PLATFORMS//,/, }." \
+            "$BODY")
 
           gh release create "v${VERSION}" \
             --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
             --title "v${VERSION}" \
-            --notes "$BODY" \
+            --notes "$NOTES" \
             artifacts/*
-
-  publish:
-    needs: [check, build]
-    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        version: ${{ fromJson(needs.check.outputs.versions) }}
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v6
-        with:
-          name: packages-${{ matrix.version }}
-          path: artifacts/
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 'latest'
-          registry-url: 'https://registry.npmjs.org'
-          scope: '@cometix'
-
-      - name: Determine publish tag
-        id: publish-tag
-        run: |
-          VERSION="${{ matrix.version }}"
-          LATEST=$(npm view "@cometix/claude-code" version 2>/dev/null || echo "0.0.0")
-          if npx semver "$VERSION" -r ">$LATEST" &>/dev/null; then
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "Version $VERSION > latest ($LATEST), will publish as latest"
-          else
-            echo "tag=--tag backfill" >> "$GITHUB_OUTPUT"
-            echo "Version $VERSION <= latest ($LATEST), will publish with --tag backfill"
-          fi
-
-      - name: Publish platform packages
-        run: |
-          VERSION="${{ matrix.version }}"
-          TAG_FLAG="${{ steps.publish-tag.outputs.tag }}"
-          FAILED=""
-          PUBLISHED=""
-          for tgz in ./artifacts/cometix-claude-code-*-${VERSION}.tgz; do
-            [ -f "$tgz" ] || continue
-            PKG=$(basename "$tgz" | sed "s/-${VERSION}.tgz//" | sed 's/^cometix-/@cometix\//')
-            echo "Publishing ${PKG}@${VERSION}..."
-            if npm view "${PKG}@${VERSION}" version &>/dev/null 2>&1; then
-              echo "  Already published, skipping"
-            # Use setup-node's bundled npm — npx npm@latest can miss the
-            # sigstore dependency required for --provenance.
-            elif npm publish "$tgz" --access public --provenance $TAG_FLAG; then
-              PUBLISHED="$PUBLISHED $PKG"
-            else
-              # Keep going so one bad package cannot strand the rest, but
-              # remember it: a swallowed failure here used to leave the main
-              # package pointing at optional deps that were never published,
-              # with the job still green.
-              echo "  FAILED: ${PKG}@${VERSION}"
-              FAILED="$FAILED $PKG"
-            fi
-          done
-
-          if [ -n "$FAILED" ]; then
-            echo "::error::Platform packages failed to publish:$FAILED"
-            exit 1
-          fi
-          echo "Published:$PUBLISHED"
-
-      - name: Publish main package
-        run: |
-          VERSION="${{ matrix.version }}"
-          TAG_FLAG="${{ steps.publish-tag.outputs.tag }}"
-          TARBALL="./artifacts/cometix-claude-code-${VERSION}.tgz"
-          if [ ! -f "$TARBALL" ]; then
-            echo "Tarball not found: $TARBALL"
-            ls -la ./artifacts/
-            exit 1
-          fi
-          if npm view "@cometix/claude-code@${VERSION}" version &>/dev/null 2>&1; then
-            echo "Already published, skipping"
-          else
-            # Use setup-node's bundled npm — npx npm@latest can miss the
-            # sigstore dependency required for --provenance.
-            npm publish "$TARBALL" --access public --provenance $TAG_FLAG
-            echo "Published @cometix/claude-code@${VERSION}"
-          fi

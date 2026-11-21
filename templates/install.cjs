@@ -46,7 +46,42 @@ function copyDirSync(src, dest) {
   }
 }
 
+// Fix node-pty spawn-helper execute permission.
+// npm strips +x from non-bin files; without it pty.spawn() fails
+// with "posix_spawnp failed" on unix. Windows uses .exe (no chmod needed).
+function fixPermissions(dest) {
+  // copyFileSync carries the source mode over, and npm may have stripped +x
+  // from the platform tarball, so restore it on the bin entry.
+  try {
+    require('fs').chmodSync(path.join(dest, 'cli.js'), 0o755);
+  } catch {}
+
+  try {
+    const { chmodSync } = require('fs');
+    const search = [
+      path.join(dest, 'node_modules', 'node-pty', 'prebuilds'),
+      path.join(dest, '..', 'node-pty', 'prebuilds'),
+    ];
+    for (const dir of search) {
+      if (!existsSync(dir)) continue;
+      for (const plat of readdirSync(dir)) {
+        const h = path.join(dir, plat, 'spawn-helper');
+        if (existsSync(h)) chmodSync(h, 0o755);
+      }
+    }
+  } catch {}
+}
+
 function main() {
+  // Release tarballs (scripts/build-standalone-package.mjs) already carry the
+  // platform files; there is no platform package to copy from.
+  let standalone = null;
+  try { standalone = require('./package.json').cometixStandalone || null; } catch {}
+  if (standalone) {
+    fixPermissions(__dirname);
+    return;
+  }
+
   const platformKey = getPlatformKey();
   const info = PLATFORMS[platformKey];
 
@@ -88,29 +123,7 @@ function main() {
     return;
   }
 
-  // copyFileSync carries the source mode over, and npm may have stripped +x
-  // from the platform tarball, so restore it on the bin entry.
-  try {
-    require('fs').chmodSync(path.join(dest, 'cli.js'), 0o755);
-  } catch {}
-
-  // Fix node-pty spawn-helper execute permission.
-  // npm strips +x from non-bin files; without it pty.spawn() fails
-  // with "posix_spawnp failed" on unix. Windows uses .exe (no chmod needed).
-  try {
-    const { chmodSync } = require('fs');
-    const search = [
-      path.join(dest, 'node_modules', 'node-pty', 'prebuilds'),
-      path.join(dest, '..', 'node-pty', 'prebuilds'),
-    ];
-    for (const dir of search) {
-      if (!existsSync(dir)) continue;
-      for (const plat of readdirSync(dir)) {
-        const h = path.join(dir, plat, 'spawn-helper');
-        if (existsSync(h)) chmodSync(h, 0o755);
-      }
-    }
-  } catch {}
+  fixPermissions(dest);
 }
 
 main();

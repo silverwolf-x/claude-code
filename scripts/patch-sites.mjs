@@ -155,9 +155,21 @@ function siteIdsFor(hits) {
 
 // How many files carry each marker, so a marker that survives while its
 // predicate stops matching can be told apart from one that simply left.
-function countMarkers(code, tally) {
+// The first occurrence of each is kept as an excerpt, so a stale marker can
+// be shown in the build log in the shape it now has.
+const EXCERPT_RADIUS = 1200;
+
+function countMarkers(code, tally, rel, samples) {
   for (const marker of AST_MARKERS) {
-    if (code.includes(marker)) tally.set(marker, (tally.get(marker) ?? 0) + 1);
+    const at = code.indexOf(marker);
+    if (at === -1) continue;
+    tally.set(marker, (tally.get(marker) ?? 0) + 1);
+    if (samples && !samples.has(marker)) {
+      samples.set(marker, {
+        rel,
+        excerpt: code.slice(Math.max(0, at - EXCERPT_RADIUS), at + marker.length + EXCERPT_RADIUS),
+      });
+    }
   }
 }
 
@@ -165,12 +177,13 @@ function countMarkers(code, tally) {
 export function scanSources(fileMap, sourceType = 'module') {
   const found = emptyResult();
   const markerHits = new Map();
+  const samples = new Map();
   for (const [rel, code] of Object.entries(fileMap)) {
     if (!mayContainPatchSite(code)) continue;
-    countMarkers(code, markerHits);
+    countMarkers(code, markerHits, rel, samples);
     for (const id of siteIdsIn(code, sourceType)) found.get(id).push(rel);
   }
-  return finish(found, markerHits);
+  return finish(found, markerHits, samples);
 }
 
 // Parse, collect, drop. The AST of a 7MB minified chunk runs to millions of
@@ -193,7 +206,7 @@ function siteIdsIn(code, sourceType) {
 //
 // Reported for every site, including optional ones, since an optional site
 // falling silent is precisely the case that would otherwise slip through.
-function finish(found, markerHits = new Map()) {
+function finish(found, markerHits = new Map(), samples = new Map()) {
   const missing = PATCH_SITES
     .filter((s) => s.expect === 'required' && found.get(s.id).length === 0)
     .map((s) => s.id);
@@ -217,7 +230,7 @@ function finish(found, markerHits = new Map()) {
     const files = markerHits.get(marker) ?? 0;
     if (files === 0) continue;
     if (ids.some((id) => found.get(id).length > 0)) continue;
-    stale.push({ marker, files, sites: ids });
+    stale.push({ marker, files, sites: ids, sample: samples.get(marker) });
   }
 
   return { found, missing, stale };
@@ -234,13 +247,14 @@ export async function scanPatchSites(extractDir, files, {
   // a release run walks its own copy.
   const candidates = [];
   const markerHits = new Map();
+  const samples = new Map();
   for (const rel of files) {
     const code = await readFile(join(extractDir, rel), 'utf8');
     if (!mayContainPatchSite(code)) continue;
-    countMarkers(code, markerHits);
+    countMarkers(code, markerHits, rel, samples);
     candidates.push({ rel, size: (await stat(join(extractDir, rel))).size });
   }
-  if (candidates.length === 0) return finish(emptyResult(), markerHits);
+  if (candidates.length === 0) return finish(emptyResult(), markerHits, samples);
 
   // Largest first, so the long poles start early rather than trailing a
   // nearly-finished batch.
@@ -256,7 +270,7 @@ export async function scanPatchSites(extractDir, files, {
       for (const id of siteIdsIn(code, sourceType)) found.get(id).push(rel);
     }
     for (const list of found.values()) list.sort();
-    return finish(found, markerHits);
+    return finish(found, markerHits, samples);
   }
 
   const workerPath = join(__dirname, 'patch-site-worker.mjs');
@@ -281,7 +295,7 @@ export async function scanPatchSites(extractDir, files, {
 
   // Worker completion order is nondeterministic; sort so reports are stable.
   for (const list of found.values()) list.sort();
-  return finish(found, markerHits);
+  return finish(found, markerHits, samples);
 }
 
 export function formatScanReport({ found, missing, stale = [] }) {
@@ -294,11 +308,17 @@ export function formatScanReport({ found, missing, stale = [] }) {
     const mark = files.length > 0 ? 'OK' : site.expect === 'required' ? '! ' : '--';
     lines.push(`  [${mark}] ${site.id.padEnd(18)} ${String(files.length).padStart(4)} file(s)  ${where}`);
   }
-  for (const { marker, files, sites } of stale) {
+  for (const { marker, files, sites, sample } of stale) {
     lines.push('');
     lines.push(`  [??] ${JSON.stringify(marker)} still in ${files} file(s), but ` +
       `${sites.join('/')} matched none`);
     lines.push('       The construct is there in a shape the predicate no longer knows.');
+    if (sample) {
+      lines.push(`       First occurrence, in ${sample.rel}:`);
+      lines.push(`       ${sample.excerpt.replace(/
+/g, '
+       ')}`);
+    }
   }
   if (missing.length > 0) {
     lines.push('');
