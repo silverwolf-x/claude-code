@@ -315,9 +315,7 @@ export function formatScanReport({ found, missing, stale = [] }) {
     lines.push('       The construct is there in a shape the predicate no longer knows.');
     if (sample) {
       lines.push(`       First occurrence, in ${sample.rel}:`);
-      lines.push(`       ${sample.excerpt.replace(/
-/g, '
-       ')}`);
+      lines.push(`       ${sample.excerpt.replace(/\n/g, '\n       ')}`);
     }
   }
   if (missing.length > 0) {
