@@ -26,10 +26,10 @@ jobs:
     outputs:
       versions: ${{ steps.detect.outputs.versions }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 'latest'
+          node-version: '24'
       - run: npm ci
 
       - name: Detect new versions
@@ -58,10 +58,10 @@ jobs:
     if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 'latest'
+          node-version: '24'
 
       - name: Build
         shell: bash
@@ -71,13 +71,31 @@ jobs:
         run: node native/check.cjs
 
       - name: Upload
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: cometix-native
           path: native/dist/
 
+  # The same suite as test.yml; nothing is built or released past a failure.
+  test:
+    needs: check
+    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm ci --prefix patcher --ignore-scripts --no-audit --no-fund
+      - run: npm test
+
   build:
-    needs: [check, native]
+    needs: [check, native, test]
     if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
     runs-on: ubuntu-latest
     strategy:
@@ -85,14 +103,14 @@ jobs:
       matrix:
         version: ${{ fromJson(needs.check.outputs.versions) }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 'latest'
+          node-version: '24'
       - run: npm ci
 
       - name: Download cometix-native
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: cometix-native
           path: native/dist/
@@ -122,7 +140,7 @@ jobs:
           ls -lh ./artifacts/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.version }}
           path: artifacts/
@@ -142,12 +160,12 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
       - name: Download artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: packages-${{ matrix.version }}
           path: artifacts/
@@ -176,12 +194,12 @@ jobs:
       matrix:
         version: ${{ fromJson(needs.check.outputs.versions) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: master
 
       - name: Download artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: packages-${{ matrix.version }}
           path: artifacts/

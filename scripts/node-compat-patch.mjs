@@ -208,12 +208,14 @@ export const MATCHERS = {
     node.left.property.name === 'HttpsProxyAgent' &&
     node.right?.type === 'Identifier',
 
-  // AF_() — builds the bfs/ugrep shell wrapper around a multicall binary
+  // AF_() — builds the bfs/ugrep shell wrapper around a multicall binary.
+  // Since 2.1.328 the ARGV0 lines come from a helper the wrapper calls, so
+  // the wrapper itself is only known by its _cc_bin local and its fallback.
   p8: (node, _sourceType, code) => {
     if (node.type !== 'FunctionDeclaration') return false;
     if (node.params.length < 2 || node.params.length > 4) return false;
     const body = code.slice(node.start, node.end);
-    return body.includes('ARGV0') && body.includes('_cc_bin') && body.includes('command');
+    return body.includes('_cc_bin') && body.includes('command') && body.includes('return[');
   },
 
   // isStandalone() ? embedded(module, scan(), folder) : {module, folder} — the
@@ -408,9 +410,27 @@ export function astPatch(code, sourceType = 'script') {
       // The return statement is always present and unique within AF_.
       // We insert a try/catch that resolves the system binary via `which`
       // and overwrites M (the fallback path variable).
+      // Since 2.1.328 the wrapper picks between two shell-quoted paths, both
+      // built as quote([path]): the multicall binary and process.execPath,
+      // the latter tried first behind a flag. Under Node the second is node
+      // itself, so every such binding is pointed at the system binary. Older
+      // builds kept the fallback path unquoted in M.
+      const quoted = [];
+      walk(node.body, (n) => {
+        if (n.type === 'VariableDeclarator' && n.id.type === 'Identifier' &&
+            n.init?.type === 'CallExpression' && n.init.callee.type === 'Identifier' &&
+            n.init.arguments.length === 1 && n.init.arguments[0].type === 'ArrayExpression' &&
+            n.init.arguments[0].elements.length === 1) {
+          quoted.push({ name: n.id.name, quote: n.init.callee.name });
+        }
+      });
+      const assign = quoted.length > 0
+        ? quoted.map((q) => `${q.name}=${q.quote}([_w])`).join(';')
+        : 'M=_w';
+
       const returnIdx = code.indexOf('return[', node.start);
       if (returnIdx !== -1 && returnIdx < node.end) {
-        const injection = `try{let _wc=process.platform==="win32"?"where":"which",_w=${REQ}("child_process").execFileSync(_wc,[${paramTarget}],{encoding:"utf8",timeout:2e3}).trim();if(_w&&${REQ}("fs").existsSync(_w))M=_w}catch{}`;
+        const injection = `try{let _wc=process.platform==="win32"?"where":"which",_w=${REQ}("child_process").execFileSync(_wc,[${paramTarget}],{encoding:"utf8",timeout:2e3}).trim().split(/\\r?\\n/)[0];if(_w&&${REQ}("fs").existsSync(_w)){${assign}}}catch{}`;
         replacements.push({ start: returnIdx, end: returnIdx, replacement: injection });
         stats.p8 = true;
       }
