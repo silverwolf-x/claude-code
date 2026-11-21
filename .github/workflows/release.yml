@@ -172,7 +172,7 @@ jobs:
 
       - name: Install
         run: |
-          TGZ="artifacts/cometix-claude-code-${{ matrix.version }}-${{ matrix.platform }}.tgz"
+          TGZ="./artifacts/cometix-claude-code-${{ matrix.version }}-${{ matrix.platform }}.tgz"
           npm install -g "$TGZ" --no-audit --no-fund
 
       - name: Run
