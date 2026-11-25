@@ -1,0 +1,22 @@
+name: Weekly release
+
+# GitHub only runs schedules from the default branch, so this lives on master
+# and dispatches the Release workflow on release-x64. With no version input
+# that run builds the latest Claude Code, or stops after its check when that
+# version is already released.
+on:
+  schedule:
+    - cron: '0 20 * * 0'   # Monday 04:00 UTC+8
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Release on release-x64
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref release-x64
