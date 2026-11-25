@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  actions: read   # the win32 build polls the native job's status
 
 # Release builds cover these targets only.
 env:
@@ -57,6 +58,8 @@ jobs:
   # Only win32-x64 ships here, so only x64 is built, and the result is cached
   # on the native sources: a run that did not touch native/ restores it
   # instead of compiling. It is still checked against the OS every time.
+  # Off the critical path: the win32 build only picks it up once patching is
+  # done, so compiling overlaps the download and patch.
   native:
     needs: check
     if: needs.check.outputs.version != ''
@@ -111,9 +114,10 @@ jobs:
       - run: npm test
 
   # One job per platform: extraction and patching run one platform per
-  # process, so splitting them across runners halves the build.
+  # process, so splitting them across runners halves the build. Neither waits
+  # for the native job up front; see "Add cometix-native".
   build:
-    needs: [check, native]
+    needs: check
     if: needs.check.outputs.version != ''
     runs-on: ubuntu-latest
     strategy:
@@ -130,19 +134,37 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
 
-      - name: Download cometix-native
-        if: startsWith(matrix.platform, 'win32-')
-        uses: actions/download-artifact@v8
-        with:
-          name: cometix-native
-          path: native/dist/
-
       - name: Build package
         run: |
           node scripts/fetch-and-process.mjs \
             --version "$VERSION" \
             --platforms "${{ matrix.platform }}" \
             --output "./dist/$VERSION"
+
+      # build-platform-package would copy the addon to the platform package
+      # root; doing it here instead lets patching run while it compiles.
+      - name: Wait for cometix-native
+        if: startsWith(matrix.platform, 'win32-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 1 180); do
+            S=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+              --jq '.jobs[] | select(.name == "native") | "\(.status) \(.conclusion // "")"')
+            case "$S" in
+              "completed success") exit 0 ;;
+              completed*) echo "::error::native job ended: $S"; exit 1 ;;
+            esac
+            sleep 5
+          done
+          echo "::error::timed out waiting for the native job"; exit 1
+
+      - name: Add cometix-native
+        if: startsWith(matrix.platform, 'win32-')
+        uses: actions/download-artifact@v8
+        with:
+          name: cometix-native
+          path: dist/${{ needs.check.outputs.version }}/packages/${{ matrix.platform }}/
 
       # One self-contained tarball: main package and platform package merged,
       # installable with `npm install -g <file>.tgz` without any @cometix
@@ -211,7 +233,7 @@ jobs:
           claude mcp list
 
   release:
-    needs: [check, test, verify]
+    needs: [check, native, test, verify]
     if: needs.check.outputs.version != ''
     runs-on: ubuntu-latest
     permissions:
@@ -237,7 +259,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
-          git diff --cached --quiet || (git commit -m "changelog: sync v${VERSION}" && git push)
+          git diff --cached --quiet || (git commit -m "changelog: sync v${VERSION} [skip ci]" && git push)
 
       - name: Create GitHub Release
         env:

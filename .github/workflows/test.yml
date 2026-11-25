@@ -1,8 +1,9 @@
 name: Test
 
+# On this branch every release run carries the same suite as its gate, so
+# pushes here are not tested twice.
 on:
   pull_request:
-  push:
 
 permissions:
   contents: read
