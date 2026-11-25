@@ -202,12 +202,17 @@ jobs:
       run:
         shell: bash
     steps:
-      # Defender scans every file npm extracts; with the bundle's ~1500
-      # files that is most of a Windows install.
-      - name: Stop Defender real-time scanning
+      # Windows runners keep npm's global prefix and cache on C:, a slow disk;
+      # writing the bundle's ~1500 files there was most of the install.
+      # RUNNER_TEMP sits on the fast work disk.
+      - name: Keep npm on the work disk
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
+        run: |
+          P="$RUNNER_TEMP\\npm-global"
+          mkdir -p "$P"
+          echo "npm_config_prefix=$P" >> "$GITHUB_ENV"
+          echo "npm_config_cache=$RUNNER_TEMP\\npm-cache" >> "$GITHUB_ENV"
+          echo "$P" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v7
         with:
