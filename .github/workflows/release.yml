@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Specific version (leave empty for auto-detect)'
+        description: 'Specific version (leave empty for the latest Claude Code release)'
         required: false
         type: string
       force:
@@ -21,50 +21,61 @@ env:
   PLATFORMS: linux-x64,win32-x64
 
 jobs:
+  # Resolves the one version this run builds. Needs nothing from the repo:
+  # the runner's preinstalled node/npm and gh are enough.
   check:
     runs-on: ubuntu-latest
     outputs:
-      versions: ${{ steps.detect.outputs.versions }}
+      version: ${{ steps.detect.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-      - run: npm ci
-
-      - name: Detect new versions
+      - name: Resolve version
         id: detect
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "versions=[\"${{ inputs.version }}\"]" >> "$GITHUB_OUTPUT"
-            echo "Manual: ${{ inputs.version }}"
+          VERSION="${INPUT_VERSION#v}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(npm view @anthropic-ai/claude-code version)
+            if [ -z "$VERSION" ]; then
+              echo "::error::Could not resolve the latest @anthropic-ai/claude-code version"
+              exit 1
+            fi
+            echo "Latest: ${VERSION}"
           else
-            EXISTING=$(gh release list --limit 200 --json tagName \
-              --jq '[.[].tagName | ltrimstr("v")]' 2>/dev/null || echo '[]')
-            VERSIONS=$(node scripts/check-new-versions.mjs \
-              --existing "$EXISTING" --json)
-            echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
+            echo "Manual: ${VERSION}"
           fi
+          if [ "$FORCE" != "true" ] && \
+             gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+            echo "::notice::v${VERSION} is already released; nothing to do (tick force to rebuild)"
+            exit 0
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
   # cometix-native (native/): the Bun.ant members the polyfill attaches.
-  # Built once per run, on Windows — the only platform whose members it
-  # implements so far — and checked against the OS there before any package
-  # takes it. A missing arm64 build is a warning, not a failure: the polyfill
-  # leaves the members absent and the bundle falls back as it always has.
+  # Only win32-x64 ships here, so only x64 is built, and the result is cached
+  # on the native sources: a run that did not touch native/ restores it
+  # instead of compiling. It is still checked against the OS every time.
   native:
     needs: check
-    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
+    if: needs.check.outputs.version != ''
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+
+      - name: Restore build
+        id: cache
+        uses: actions/cache@v6
         with:
-          node-version: '24'
+          path: native/dist/
+          key: cometix-native-x64-${{ hashFiles('native/src/**', 'native/Cargo.toml', 'native/Cargo.lock', 'native/build.rs', 'native/build.sh') }}
 
       - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          NATIVE_ARCHES: x64
         run: bash native/build.sh
 
       - name: Check against the OS
@@ -76,10 +87,11 @@ jobs:
           name: cometix-native
           path: native/dist/
 
-  # The same suite as test.yml; nothing is built or released past a failure.
+  # The same suite as test.yml. It runs beside the build rather than ahead of
+  # it; nothing is released past a failure.
   test:
     needs: check
-    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
+    if: needs.check.outputs.version != ''
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -90,89 +102,104 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            patcher/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm ci --prefix patcher --ignore-scripts --no-audit --no-fund
       - run: npm test
 
+  # One job per platform: extraction and patching run one platform per
+  # process, so splitting them across runners halves the build.
   build:
-    needs: [check, native, test]
-    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
+    needs: [check, native]
+    if: needs.check.outputs.version != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        version: ${{ fromJson(needs.check.outputs.versions) }}
+        platform: [linux-x64, win32-x64]
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - run: npm ci
+          cache: npm
+      - run: npm ci --no-audit --no-fund
 
       - name: Download cometix-native
+        if: startsWith(matrix.platform, 'win32-')
         uses: actions/download-artifact@v8
         with:
           name: cometix-native
           path: native/dist/
 
-      - name: Build packages
+      - name: Build package
         run: |
           node scripts/fetch-and-process.mjs \
-            --version "${{ matrix.version }}" \
-            --platforms "$PLATFORMS" \
-            --output "./dist/${{ matrix.version }}"
+            --version "$VERSION" \
+            --platforms "${{ matrix.platform }}" \
+            --output "./dist/$VERSION"
 
-      # One self-contained tarball per platform: main package and platform
-      # package merged, installable with `npm install -g <file>.tgz` without
-      # any @cometix package on the registry.
-      - name: Package release tarballs
+      # One self-contained tarball: main package and platform package merged,
+      # installable with `npm install -g <file>.tgz` without any @cometix
+      # package on the registry.
+      - name: Package release tarball
         run: |
-          DIST="./dist/${{ matrix.version }}"
-          VERSION="${{ matrix.version }}"
+          PLATFORM="${{ matrix.platform }}"
+          STAGE="$RUNNER_TEMP/pkg-wrap-${PLATFORM}"
           mkdir -p ./artifacts
-          for platform in ${PLATFORMS//,/ }; do
-            STAGE="/tmp/pkg-wrap-${platform}"
-            node scripts/build-standalone-package.mjs \
-              --dist "$DIST" --platform "$platform" --output "$STAGE/package"
-            tar czf "./artifacts/cometix-claude-code-${VERSION}-${platform}.tgz" -C "$STAGE" package/
-            rm -rf "$STAGE"
-          done
+          node scripts/build-standalone-package.mjs \
+            --dist "./dist/$VERSION" --platform "$PLATFORM" --output "$STAGE/package"
+          GZ=$(command -v pigz || command -v gzip)
+          tar -C "$STAGE" -cf - package/ | "$GZ" -1 \
+            > "./artifacts/cometix-claude-code-${VERSION}-${PLATFORM}.tgz"
           ls -lh ./artifacts/
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: packages-${{ matrix.version }}
+          name: package-${{ matrix.platform }}
           path: artifacts/
+          compression-level: 0
 
   # Install each tarball the way a user would, on its own OS, and run it from
   # outside the package directory to catch assets resolved against cwd.
   verify:
     needs: [check, build]
-    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
+    if: needs.check.outputs.version != ''
     strategy:
       fail-fast: false
       matrix:
-        version: ${{ fromJson(needs.check.outputs.versions) }}
         platform: [linux-x64, win32-x64]
     runs-on: ${{ matrix.platform == 'win32-x64' && 'windows-latest' || 'ubuntu-latest' }}
     defaults:
       run:
         shell: bash
     steps:
+      # Defender scans every file npm extracts; with the bundle's ~1500
+      # files that is most of a Windows install.
+      - name: Stop Defender real-time scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
-      - name: Download artifacts
+      - name: Download artifact
         uses: actions/download-artifact@v8
         with:
-          name: packages-${{ matrix.version }}
+          name: package-${{ matrix.platform }}
           path: artifacts/
 
       - name: Install
         run: |
-          TGZ="./artifacts/cometix-claude-code-${{ matrix.version }}-${{ matrix.platform }}.tgz"
+          TGZ="./artifacts/cometix-claude-code-${{ needs.check.outputs.version }}-${{ matrix.platform }}.tgz"
           npm install -g "$TGZ" --no-audit --no-fund
 
       - name: Run
@@ -184,15 +211,13 @@ jobs:
           claude mcp list
 
   release:
-    needs: [check, verify]
-    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
+    needs: [check, test, verify]
+    if: needs.check.outputs.version != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        version: ${{ fromJson(needs.check.outputs.versions) }}
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -201,7 +226,8 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
-          name: packages-${{ matrix.version }}
+          pattern: package-*
+          merge-multiple: true
           path: artifacts/
 
       - name: Sync CHANGELOG
@@ -211,14 +237,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
-          git diff --cached --quiet || (git commit -m "changelog: sync v${{ matrix.version }}" && git push)
+          git diff --cached --quiet || (git commit -m "changelog: sync v${VERSION}" && git push)
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ matrix.version }}"
-
           if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
             if [ "${{ inputs.force }}" = "true" ]; then
               gh release delete "v${VERSION}" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
