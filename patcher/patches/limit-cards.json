@@ -20,14 +20,19 @@
         },
         {
           "id": "reader-call",
-          "description": "Inside the status fetch, the call to the usage reader — the one call there that passes {read: …}. Without `within`, the first such call in the chunk is the status fetch being called by its own caller.",
+          "description": "Inside the status fetch, the call to the usage reader — the one call there whose options carry `read`. Up to 2.1.328 the options are an object literal; 2.1.332 picks one of two with a ternary (`n===\"at_wall\"?{read:n,surface:a}:{read:n}`), so the `read` key is looked for anywhere in the second argument. Without `within`, the first such call in the chunk is the status fetch being called by its own caller.",
           "within": "status-fetch",
           "marker": "[cedar-ember] status fetch failed",
           "match": {
             "node": "CallExpression",
             "where": {
-              "callee.type": "Identifier",
-              "arguments.1.properties.[].key.name": "read"
+              "callee.type": "Identifier"
+            },
+            "has": {
+              "node": "Property",
+              "where": {
+                "key.name": "read"
+              }
             }
           },
           "capture": {

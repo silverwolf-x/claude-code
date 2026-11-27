@@ -1,11 +1,39 @@
 {
   "id": "context-limit",
   "title": "Let CLAUDE_CODE_CONTEXT_LIMIT set the context window for any model",
-  "description": "The resolver already reads CLAUDE_CODE_MAX_CONTEXT_TOKENS, but only honours it for models that pass an eligibility check — everything else falls through to the 200000 default. This adds an unconditional short-circuit at the top of the resolver, under a separate variable name so the official one keeps its meaning.\n\nBy 2.1.302 the resolver is split in two: a two-argument entry that answers the [1m] opt-in with 1e6 and clamps some models to 200000, wrapped around a one-argument body. Callers reach the body only through the entry, so the entry is where the short-circuit has to go; patching the body alone would leave the variable ignored for [1m] models and capped for the clamped ones. The body keeps its own short-circuit, as on an unsplit build, so a caller that ever reaches it directly is covered too.",
+  "description": "The resolver already reads CLAUDE_CODE_MAX_CONTEXT_TOKENS, but only honours it for models that pass an eligibility check — everything else falls through to the 200000 default. This adds an unconditional short-circuit at the top of the resolver, under a separate variable name so the official one keeps its meaning.\n\nBy 2.1.302 the resolver is split in two: a two-argument entry that answers the [1m] opt-in with 1e6 and clamps some models to 200000, wrapped around a one-argument body. Callers reach the body only through the entry, so the entry is where the short-circuit has to go; patching the body alone would leave the variable ignored for [1m] models and capped for the clamped ones. The body keeps its own short-circuit, as on an unsplit build, so a caller that ever reaches it directly is covered too.\n\nBy 2.1.332 the resolver no longer names the variable or returns 1e6 itself: a zero-argument helper reads CLAUDE_CODE_MAX_CONTEXT_TOKENS (and honours it only while DISABLE_COMPACT is set), and the three-argument resolver opens with `let g=<helper>();if(g!==void 0)return g;`. The detect stage tells the shapes apart; on the new one the short-circuit goes at the top of that resolver.",
   "risk": "medium",
   "stages": [
     {
+      "id": "detect",
+      "sites": [
+        {
+          "id": "legacy-resolver",
+          "description": "The resolver up to 2.1.328, by the same test as resolver-guard. Only picks the stages: the legacy ones when it is found, gated when it is not.",
+          "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+          "match": {
+            "node": "FunctionDeclaration",
+            "contains": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            "has": {
+              "node": "ReturnStatement",
+              "where": {
+                "argument.type": "Literal",
+                "argument.value": 1000000
+              }
+            }
+          },
+          "capture": {
+            "legacyResolver": "id.name"
+          },
+          "expect": "optional"
+        }
+      ]
+    },
+    {
       "id": "main",
+      "when": {
+        "captured": "legacyResolver"
+      },
       "sites": [
         {
           "id": "resolver-guard",
@@ -46,13 +74,30 @@
             "contextArg": "params.1.name"
           },
           "expect": "required"
+        },
+        {
+          "id": "split-body",
+          "description": "The same resolver, when it takes (model) alone: the body of a split one. This, rather than a missing contextArg, selects the split stage, since contextArg is also missing when the legacy stages never ran.",
+          "sameFileAs": "resolver-guard",
+          "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "id.name": "{{resolver}}",
+              "params.length": 1
+            }
+          },
+          "capture": {
+            "splitBody": "id.name"
+          },
+          "expect": "optional"
         }
       ]
     },
     {
       "id": "split",
       "when": {
-        "notCaptured": "contextArg"
+        "captured": "splitBody"
       },
       "sites": [
         {
@@ -80,6 +125,52 @@
                 }
               }
             ]
+          },
+          "edit": {
+            "op": "prepend-body",
+            "text": "var __ccppCtx=+process.env.CLAUDE_CODE_CONTEXT_LIMIT;if(Number.isFinite(__ccppCtx)&&__ccppCtx>0)return __ccppCtx;"
+          },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "gated",
+      "when": {
+        "notCaptured": "legacyResolver"
+      },
+      "sites": [
+        {
+          "id": "override-reader",
+          "description": "2.1.332+: the zero-argument helper that returns CLAUDE_CODE_MAX_CONTEXT_TOKENS while DISABLE_COMPACT is set, and undefined otherwise.",
+          "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "params.length": 0
+            },
+            "contains": ["CLAUDE_CODE_MAX_CONTEXT_TOKENS", "DISABLE_COMPACT"]
+          },
+          "capture": {
+            "overrideReader": "id.name"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "resolver-entry",
+          "description": "The resolver: its first statement takes the helper's answer and its second returns it when set. The helper's other caller, an auto-compact check, reads it inline, which the first-statement test keeps out.",
+          "sameFileAs": "override-reader",
+          "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "body.body.0.type": "VariableDeclaration",
+              "body.body.0.declarations.0.init.callee.name": "{{overrideReader}}",
+              "body.body.1.type": "IfStatement"
+            }
+          },
+          "capture": {
+            "resolver": "id.name"
           },
           "edit": {
             "op": "prepend-body",

@@ -40,6 +40,28 @@
             "contains": [".isCollapsible", "redacted_thinking", "grouped_tool_use", "recap_fold", "return-1"]
           },
           "expect": "required"
+        },
+        {
+          "id": "task-tool-helper",
+          "sameFileAs": "classifier",
+          "description": "2.1.332+: the task-tool test moved out of the classifier into a one-parameter helper, `return <fullscreen>()&&name===ToolSearch||<taskTools>.includes(name)`, which the renderer also calls. Optional: when it is there, the toolsearch-helper stage edits the classifier's call to it instead, and the helper itself stays as shipped so the renderer keeps upstream behaviour.",
+          "marker": "isSearchOrReadCommand",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "params.length": 1,
+              "body.body.length": 1,
+              "body.body.0.type": "ReturnStatement",
+              "body.body.0.argument.operator": "||",
+              "body.body.0.argument.left.operator": "&&",
+              "body.body.0.argument.left.left.type": "CallExpression",
+              "body.body.0.argument.left.right.operator": "===",
+              "body.body.0.argument.left.right.right.type": "Identifier",
+              "body.body.0.argument.right.callee.property.name": "includes"
+            }
+          },
+          "capture": { "taskToolFn": "id.name", "toolSearchName": "body.body.0.argument.left.right.right.name" },
+          "expect": "optional"
         }
       ]
     },
@@ -68,7 +90,13 @@
             "text": "!{{info}}||{{info}}.isAbsorbedSilently!==!0||{{info}}.isREPL===!0"
           },
           "expect": "required"
-        },
+        }
+      ]
+    },
+    {
+      "id": "toolsearch-inline",
+      "when": { "notCaptured": "taskToolFn" },
+      "sites": [
         {
           "id": "toolsearch-inline",
           "within": "classifier",
@@ -90,7 +118,32 @@
           "capture": { "isToolSearch": "$src:test.left.right" },
           "edit": { "op": "replace-field", "field": "test.left", "text": "{{isToolSearch}}" },
           "expect": "required"
-        },
+        }
+      ]
+    },
+    {
+      "id": "toolsearch-helper",
+      "when": { "captured": "taskToolFn" },
+      "sites": [
+        {
+          "id": "toolsearch-call",
+          "within": "classifier",
+          "description": "2.1.332+: the classifier's `if(<taskToolHelper>(name))`. ToolSearch goes in front of it, so it is absorbed inline too, while the helper — and the renderer that also calls it — stays as shipped.",
+          "marker": "isSearchOrReadCommand",
+          "match": {
+            "node": "IfStatement",
+            "where": { "test.type": "CallExpression", "test.callee.name": "{{taskToolFn}}" },
+            "has": { "node": "Property", "where": { "key.name": "popsOutOnError" } }
+          },
+          "capture": { "toolName": "$src:test.arguments.0", "origTest": "$src:test" },
+          "edit": { "op": "replace-field", "field": "test", "text": "{{toolName}}==={{toolSearchName}}||{{origTest}}" },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "settle",
+      "sites": [
         {
           "id": "settle-rule",
           "within": "settle-scanner",
