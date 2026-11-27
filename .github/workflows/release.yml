@@ -246,9 +246,9 @@ jobs:
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
+      # The branch this run was dispatched on (release): the CHANGELOG sync
+      # below commits here, and master must stay a pure mirror of upstream.
       - uses: actions/checkout@v7
-        with:
-          ref: master
 
       - name: Download artifacts
         uses: actions/download-artifact@v8
