@@ -285,6 +285,13 @@ jobs:
             "Platforms: ${PLATFORMS//,/, }." \
             "$BODY")
 
+          # A copy without the version in its name, so
+          # releases/latest/download/cometix-claude-code-<platform>.tgz always
+          # names the newest build (the README's install line uses it).
+          for f in artifacts/cometix-claude-code-"${VERSION}"-*.tgz; do
+            cp "$f" "artifacts/cometix-claude-code-${f##*-"${VERSION}"-}"
+          done
+
           gh release create "v${VERSION}" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
