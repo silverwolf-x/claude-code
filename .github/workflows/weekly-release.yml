@@ -1,7 +1,8 @@
 name: Weekly release
 
-# GitHub only runs schedules from the default branch, so this lives on master
-# and dispatches the Release workflow on release-x64. With no version input
+# GitHub only runs schedules from the default branch, which is release-x64
+# (master stays a pure mirror of upstream). This dispatches the Release
+# workflow on release-x64. With no version input
 # that run builds the latest Claude Code, or stops after its check when that
 # version is already released.
 on:
