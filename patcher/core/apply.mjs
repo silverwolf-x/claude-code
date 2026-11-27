@@ -154,13 +154,26 @@ function assetSource(asset) {
   return join(asset.localRoot ?? ASSET_DIR, asset.from);
 }
 
+async function sameBytes(srcPath, destPath, size) {
+  try {
+    if ((await stat(destPath)).size !== size) return false;
+    const [a, b] = await Promise.all([readFile(srcPath), readFile(destPath)]);
+    return a.equals(b);
+  } catch {
+    return false;
+  }
+}
+
 // `only` filters a directory's entries, so a four-platform addon ships one
 // binary rather than all of them — the other three cannot load here anyway.
 async function copyAsset(srcPath, destPath, only) {
   const info = await stat(srcPath);
   if (!info.isDirectory()) {
     await mkdir(dirname(destPath), { recursive: true });
-    await copyFile(srcPath, destPath);
+    // Already there byte for byte: leave it. On Windows a loaded addon is
+    // locked, so re-copying it while Claude Code runs (voice mode keeps
+    // cometix-asr loaded) fails with EBUSY and takes the whole run with it.
+    if (!(await sameBytes(srcPath, destPath, info.size))) await copyFile(srcPath, destPath);
     return [{ path: destPath, bytes: info.size }];
   }
   const written = [];
