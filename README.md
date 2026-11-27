@@ -1,5 +1,8 @@
 # @cometix/claude-code
 
+[![Anthropic Claude Code](https://badgen.net/npm/v/@anthropic-ai/claude-code?style=flat&label=Anthropic%20Claude%20Code&color=D97757&icon=anthropic)](https://www.npmjs.com/package/@anthropic-ai/claude-code)[![released](https://img.shields.io/github/release-date/anthropics/claude-code?display_date=published_at&style=flat-square&label=&color=EBB09B)](https://www.npmjs.com/package/@anthropic-ai/claude-code)
+[![this build](https://badgen.net/github/release/silverwolf-x/claude-code?style=flat&label=this%20build&color=2ea44f&icon=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTEgMTkgMTIiPjxwYXRoIGZpbGw9IiNkNzc3NTciIGQ9Ik0zIDBoMTN2MUgzek0zIDFoMTN2MUgzek0zIDJoM3YxSDN6TTcgMmg3djFIN3pNMTUgMmgxdjFIMTV6TTMgM2gzdjFIM3pNNyAzaDd2MUg3ek0xNSAzaDF2MUgxNXpNMSA0aDE3djFIMXpNMSA1aDE3djFIMXpNMyA2aDEzdjFIM3pNMyA3aDEzdjFIM3pNMyA4aDF2MUgzek01IDhoMXYxSDV6TTEzIDhoMXYxSDEzek0xNSA4aDF2MUgxNXpNMyA5aDF2MUgzek01IDloMXYxSDV6TTEzIDloMXYxSDEzek0xNSA5aDF2MUgxNXoiLz48cGF0aCBmaWxsPSIjMTQxNDE0IiBkPSJNNiAyaDF2MUg2ek0xNCAyaDF2MUgxNHpNNiAzaDF2MUg2ek0xNCAzaDF2MUgxNHoiLz48L3N2Zz4=&iconWidth=21)](https://github.com/silverwolf-x/claude-code/releases/latest)[![released](https://img.shields.io/github/release-date/silverwolf-x/claude-code?display_date=published_at&style=flat-square&label=&color=94D3A6)](https://github.com/silverwolf-x/claude-code/releases/latest)
+
 Claude Code restored for Node.js — extracted from the official Bun SEA binaries and patched to run on the Node.js runtime.
 
 Since v2.1.113 Anthropic ships Claude Code as native Bun binaries rather than Node-runnable JavaScript. This project unpacks them and reassembles a standard npm package.
@@ -7,8 +10,10 @@ Since v2.1.113 Anthropic ships Claude Code as native Bun binaries rather than No
 ## Install
 
 ```bash
-npm install -g @cometix/claude-code
+npm install -g --allow-remote=all https://github.com/silverwolf-x/claude-code/releases/latest/download/cometix-claude-code-win32-x64.tgz
 ```
+
+Installs the latest Windows x64 build from this fork's releases. `--allow-remote=all` lifts npm's default refusal to install from a URL, for this one command only.
 
 Requires **Node.js 24 or newer**. The bundle uses `using` / `await using` (explicit resource management), which earlier releases reject at parse time, and reads zstd-framed assets through `node:zlib`.
 
